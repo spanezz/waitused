@@ -1,0 +1,75 @@
+#!/usr/bin/python3
+from __future__ import annotations
+from typing import Dict
+import argparse
+import pyinotify
+import asyncio
+import sys
+
+
+class ChangeMonitor:
+    """
+    Watch inotify events
+    """
+    def __init__(self):
+        self.loop = asyncio.get_event_loop()
+        # Set up pyinotify.
+        # See https://stackoverflow.com/questions/26414052/watch-for-a-file-with-asyncio
+        self.watch_manager = pyinotify.WatchManager()
+        # Map absolute paths to Watch handlers
+        self.watches: Dict[str, pyinotify.Watch] = {}
+        # self.watch = self.watch_manager.add_watch(self.media_dir, pyinotify.IN_DELETE)
+        self.notifier = pyinotify.AsyncioNotifier(
+                self.watch_manager, self.loop, default_proc_fun=self.on_event)
+
+        # Event triggers
+        self.opened = self.loop.create_future()
+        self.closed = self.loop.create_future()
+
+    def add_file(self, path: str):
+        self.watches[path] = self.watch_manager.add_watch(
+                path, pyinotify.IN_OPEN | pyinotify.IN_CLOSE_NOWRITE | pyinotify.IN_CLOSE_WRITE)
+
+    def notify(self):
+        self.pending = None
+        self.app.trigger_reload()
+
+    def on_event(self, event):
+        """
+        Handle incoming asyncio events
+        """
+        if event.path not in self.watches:
+            return
+
+        if event.mask & pyinotify.IN_OPEN:
+            self.opened.set_result(None)
+
+        if event.mask & (pyinotify.IN_CLOSE_NOWRITE | pyinotify.IN_CLOSE_WRITE):
+            self.closed.set_result(None)
+
+
+async def run(args):
+    monitor = ChangeMonitor()
+    monitor.add_file(args.path)
+
+    proc = await asyncio.create_subprocess_exec(*args.command)
+
+    await proc.wait()
+    await monitor.opened
+    await monitor.closed
+
+    return proc.returncode
+
+
+def main():
+    parser = argparse.ArgumentParser(
+            description="Run a command exiting only after it quits and a given file has been opened and closed")
+    parser.add_argument("path", action="store", help="file to monitor")
+    parser.add_argument("command", nargs=argparse.REMAINDER, help="command to run")
+    args = parser.parse_args()
+
+    sys.exit(asyncio.run(run(args)))
+
+
+if __name__ == "__main__":
+    main()
